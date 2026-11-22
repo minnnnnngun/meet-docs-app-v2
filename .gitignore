@@ -1,0 +1,12 @@
+.env
+.env.*
+!.env.example
+.venv/
+.omx/
+.ruff_cache/
+__pycache__/
+*.py[cod]
+output/
+dist/
+
+.meet-docs-recovery/

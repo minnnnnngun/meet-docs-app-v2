@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=실시간 회의록
+Comment=한국어 회의 자막과 회의록 작성
+Exec=/usr/bin/meet-docs
+TryExec=/usr/bin/meet-docs
+Icon=io.github.meetdocs.MeetDocs
+Terminal=false
+Categories=Office;
+Keywords=회의;회의록;녹취;자막;
+Keywords[en]=Meet Docs;meeting;minutes;transcript;
+StartupNotify=true
+StartupWMClass=io.github.meetdocs.MeetDocs
+SingleMainWindow=true
