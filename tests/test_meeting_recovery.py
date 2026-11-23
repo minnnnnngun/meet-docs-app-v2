@@ -82,6 +82,8 @@ if sys.argv[2] == "legacy":
     with sqlite3.connect(journal.path) as connection:
         connection.execute("ALTER TABLE captions DROP COLUMN review_turn_json")
         connection.execute("ALTER TABLE meeting DROP COLUMN review_decisions_json")
+        connection.execute("ALTER TABLE meeting DROP COLUMN corrections_json")
+        connection.execute("ALTER TABLE meeting DROP COLUMN audio_id")
 os._exit(9)
 """,
                 str(output),

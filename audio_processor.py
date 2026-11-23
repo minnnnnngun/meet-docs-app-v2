@@ -101,6 +101,13 @@ class DialogueTurn:
     intent: str | None = None
 
 
+@dataclass(frozen=True)
+class RecheckTarget:
+    offset_seconds: float
+    original: str
+    hint: str
+
+
 def _fresh_activity(chunk: AudioChunk) -> PCM:
     if chunk.activity_samples is not None:
         return chunk.activity_samples
@@ -488,16 +495,33 @@ class GeminiTranscriber:
         self._domain_prompt = domain_prompt
 
     def transcribe(
-        self, chunk: AudioChunk, *, previous_text: str = ""
+        self,
+        chunk: AudioChunk,
+        *,
+        previous_text: str = "",
+        target: RecheckTarget | None = None,
     ) -> tuple[DialogueTurn, ...]:
         samples = prepare_audio(chunk)
         if samples is None:
             return ()
-        context = {
+        context: dict[str, object] = {
             "표기 참고": self._domain_prompt,
             "이전 자막 참고": previous_text[-CONTEXT_CHARACTERS:],
             "앞부분의 겹침 길이(초)": chunk.overlap_samples / SAMPLE_RATE,
         }
+        instruction = TRANSCRIPTION_INSTRUCTION
+        if target is not None:
+            context["재인식 요청"] = {
+                "오디오 내 대상 시각(초)": target.offset_seconds,
+                "기존 대상 발언": target.original,
+                "사용자 표기 힌트": target.hint,
+            }
+            instruction += (
+                "\n재인식 요청이 있으면 대상 시각 주변에서 기존 발언에 해당하는 발화 한 건만 "
+                "반환한다. 앞뒤 소리는 발언을 구분하는 데 사용한다. 사용자 표기 힌트는 "
+                "실제로 들리는 소리와 이어지는 말에 맞을 때 적용한다. 다른 발언을 이어 붙이지 "
+                "않고 대상을 식별할 수 없으면 has_speech를 false로 반환한다."
+            )
         result = self._client.models.generate_content(
             model=TRANSCRIPTION_MODEL,
             contents=[
@@ -505,7 +529,7 @@ class GeminiTranscriber:
                 types.Part.from_bytes(data=_wav_bytes(samples), mime_type="audio/wav"),
             ],
             config=types.GenerateContentConfig(
-                system_instruction=TRANSCRIPTION_INSTRUCTION,
+                system_instruction=instruction,
                 response_mime_type="application/json",
                 response_schema=types.Schema(
                     type=types.Type.OBJECT,

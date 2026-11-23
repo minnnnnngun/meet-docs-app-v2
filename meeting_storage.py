@@ -1,13 +1,34 @@
 """Owner-only recovery journal and durable atomic text exports."""
 
+import json
 import os
+import re
 import sqlite3
 from collections.abc import Iterator
 from contextlib import closing, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from tempfile import mkstemp
+
+MAX_CORRECTION_LENGTH = 520
+AUDIO_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def normalize_correction(text: str) -> str:
+    if not isinstance(text, str):
+        raise TypeError("교정 문장을 입력하세요.")
+    normalized = " ".join(text.split())
+    if not normalized or len(normalized) > MAX_CORRECTION_LENGTH:
+        raise ValueError(f"교정 문장을 {MAX_CORRECTION_LENGTH}자 이내로 입력하세요.")
+    return normalized
+
+
+def validate_audio_id(audio_id: str | None) -> None:
+    if audio_id is not None and (
+        not isinstance(audio_id, str) or not AUDIO_ID.fullmatch(audio_id)
+    ):
+        raise ValueError("Invalid meeting audio identifier")
 
 
 def sync_directory(path: Path) -> None:
@@ -37,6 +58,8 @@ class MeetingRecord:
     verbatim_captions: tuple[str, ...] | None = None
     review_turns_json: tuple[str, ...] = ()
     review_decisions_json: str | None = None
+    corrections: dict[int, str] = field(default_factory=dict)
+    audio_id: str | None = None
 
 
 class RecoveryJournal:
@@ -94,7 +117,8 @@ class RecoveryJournal:
                     """CREATE TABLE meeting (
                     id INTEGER PRIMARY KEY CHECK (id = 1), started_at TEXT NOT NULL,
                     topic TEXT NOT NULL, minutes TEXT NOT NULL DEFAULT '',
-                    summarized_count INTEGER NOT NULL DEFAULT 0, stem TEXT, review_decisions_json TEXT
+                    summarized_count INTEGER NOT NULL DEFAULT 0, stem TEXT, review_decisions_json TEXT,
+                    corrections_json TEXT, audio_id TEXT
                     )"""
                 )
                 connection.execute(
@@ -139,6 +163,35 @@ class RecoveryJournal:
         with self._connection() as connection:
             connection.execute("UPDATE meeting SET stem = ? WHERE id = 1", (stem,))
 
+    def store_audio_id(self, audio_id: str) -> None:
+        validate_audio_id(audio_id)
+        with self._connection() as connection:
+            connection.execute(
+                "UPDATE meeting SET audio_id = ? WHERE id = 1", (audio_id,)
+            )
+
+    def store_corrections(self, corrections: dict[int, str]) -> None:
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            caption_ids = {
+                line
+                for (line,) in connection.execute(
+                    "SELECT sequence FROM captions WHERE review_turn_json IS NOT NULL"
+                )
+            }
+            if any(
+                type(line) is not int or line not in caption_ids for line in corrections
+            ):
+                raise ValueError("저장된 발언만 교정할 수 있습니다.")
+            normalized = {
+                line: normalize_correction(correction)
+                for line, correction in corrections.items()
+            }
+            connection.execute(
+                "UPDATE meeting SET corrections_json = ? WHERE id = 1",
+                (json.dumps(normalized, ensure_ascii=False),),
+            )
+
     def load(self) -> MeetingRecord | None:
         if self.path.stat().st_size == 0:
             return None
@@ -151,14 +204,13 @@ class RecoveryJournal:
             meeting_columns = {
                 column[1] for column in connection.execute("PRAGMA table_info(meeting)")
             }
-            decisions_column = (
-                "review_decisions_json"
-                if "review_decisions_json" in meeting_columns
-                else "NULL"
+            supplemental_columns = ", ".join(
+                column if column in meeting_columns else "NULL"
+                for column in ("review_decisions_json", "corrections_json", "audio_id")
             )
             row = connection.execute(
                 "SELECT started_at, topic, minutes, summarized_count, stem, "
-                f"{decisions_column} FROM meeting WHERE id = 1"
+                f"{supplemental_columns} FROM meeting WHERE id = 1"
             ).fetchone()
             if row is None:
                 return None
@@ -176,7 +228,16 @@ class RecoveryJournal:
             captions = connection.execute(
                 f"SELECT sequence, line, {raw_column}, {turn_column} FROM captions ORDER BY sequence"
             ).fetchall()
-        started_at, topic, minutes, summarized_count, stem, review_decisions = row
+        (
+            started_at,
+            topic,
+            minutes,
+            summarized_count,
+            stem,
+            review_decisions,
+            corrections_json,
+            audio_id,
+        ) = row
         try:
             start = datetime.fromisoformat(started_at)
         except (TypeError, ValueError) as exc:
@@ -189,6 +250,20 @@ class RecoveryJournal:
             ):
                 raise OSError("Invalid meeting recovery filename")
         verbatim = tuple(raw for _, _, raw, _ in captions if raw is not None)
+        corrections = {}
+        try:
+            validate_audio_id(audio_id)
+            if corrections_json is not None:
+                caption_ids = {
+                    sequence for sequence, _, _, turn in captions if turn is not None
+                }
+                for key, correction in json.loads(corrections_json).items():
+                    line = int(key)
+                    if line not in caption_ids or line in corrections:
+                        raise ValueError("Invalid corrected line")
+                    corrections[line] = normalize_correction(correction)
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise OSError("Invalid meeting recovery correction data") from exc
         return MeetingRecord(
             start,
             topic,
@@ -199,6 +274,8 @@ class RecoveryJournal:
             verbatim or None,
             tuple(turn for _, _, _, turn in captions if turn is not None),
             review_decisions,
+            corrections,
+            audio_id,
         )
 
     def clear(self) -> None:

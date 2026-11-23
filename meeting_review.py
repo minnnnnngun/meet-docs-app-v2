@@ -10,7 +10,12 @@ from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 
 from meeting_history import STEM
-from meeting_storage import Export, save_exports
+from meeting_storage import (
+    Export,
+    normalize_correction,
+    save_exports,
+    validate_audio_id,
+)
 
 REVIEW_SUFFIX = "검토.json"
 DECISION_STATUSES = {"확정", "검토", "확인 필요"}
@@ -41,6 +46,9 @@ class ReviewRecord:
     decisions: tuple[ReviewDecision, ...]
     confirmations: dict[int, str] = field(default_factory=dict)
     approvals: dict[int, int] = field(default_factory=dict)
+    corrections: dict[int, str] = field(default_factory=dict)
+    revised_minutes: str | None = None
+    audio_id: str | None = None
 
 
 def _review_path(output_dir: Path, stem: str) -> Path:
@@ -120,7 +128,18 @@ def _validated(record: ReviewRecord) -> ReviewRecord:
             or line not in record.confirmations
         ):
             raise ValueError("Invalid decision approval")
-    return replace(record, decisions=tuple(decisions))
+    corrections = {}
+    for line, text in record.corrections.items():
+        if type(line) is not int or line not in turns:
+            raise ValueError("Invalid corrected transcript line")
+        corrections[line] = normalize_correction(text)
+    if record.revised_minutes is not None and (
+        not isinstance(record.revised_minutes, str)
+        or not record.revised_minutes.strip()
+    ):
+        raise ValueError("Invalid revised minutes")
+    validate_audio_id(record.audio_id)
+    return replace(record, decisions=tuple(decisions), corrections=corrections)
 
 
 def read_review(output_dir: Path, stem: str) -> ReviewRecord | None:
@@ -152,6 +171,11 @@ def read_review(output_dir: Path, stem: str) -> ReviewRecord | None:
             approvals={
                 int(index): line for index, line in data.get("approvals", {}).items()
             },
+            corrections={
+                int(line): text for line, text in data.get("corrections", {}).items()
+            },
+            revised_minutes=data.get("revised_minutes"),
+            audio_id=data.get("audio_id"),
         )
         return _validated(record)
     except (AttributeError, KeyError, TypeError, ValueError) as exc:
@@ -236,3 +260,87 @@ def approve_decision(output_dir: Path, stem: str, index: int, line: int) -> None
             return
         updated = replace(record, approvals={**record.approvals, index: line})
         save_exports((review_export(output_dir, stem, updated),))
+
+
+def save_correction(output_dir: Path, stem: str, line: int, text: str) -> ReviewRecord:
+    if type(line) is not int:
+        raise ValueError("교정할 발언을 선택하세요.")
+    correction = normalize_correction(text)
+    with _review_lock(_review_path(output_dir, stem)):
+        record = read_review(output_dir, stem)
+        if record is None:
+            raise ValueError("저장된 회의 기록을 찾을 수 없습니다.")
+        turn = next((turn for turn in record.turns if turn.line == line), None)
+        if turn is None:
+            raise ValueError("교정할 발언을 찾을 수 없습니다.")
+        corrections = dict(record.corrections)
+        if correction == " ".join(turn.original.split()):
+            corrections.pop(line, None)
+        else:
+            corrections[line] = correction
+        if corrections == record.corrections:
+            return record
+        updated = replace(record, corrections=corrections)
+        save_exports((review_export(output_dir, stem, updated),))
+        return updated
+
+
+def _include_approved_decisions(minutes: str, missing: list[ReviewDecision]) -> str:
+    if not missing:
+        return minutes
+    heading = "## 주요 논의 및 결정 사항"
+    lines = minutes.splitlines()
+    if heading not in lines:
+        lines.extend(("", heading))
+    start = lines.index(heading) + 1
+    if lines[start : start + 1] == ["- 확인된 내용 없음"]:
+        del lines[start]
+    lines[start:start] = [
+        f"- **{row.status}** — {' '.join(row.text.split())}" for row in missing
+    ]
+    return "\n".join(lines)
+
+
+def save_revised_summary(
+    output_dir: Path,
+    stem: str,
+    expected: ReviewRecord,
+    minutes: str,
+    decisions: tuple[ReviewDecision, ...],
+) -> ReviewRecord:
+    if not isinstance(minutes, str) or not minutes.strip():
+        raise ValueError("저장할 회의록이 비어 있습니다.")
+    with _review_lock(_review_path(output_dir, stem)):
+        record = read_review(output_dir, stem)
+        if record is None or record != expected:
+            raise ValueError("정리 중에 회의 기록이 바뀌었습니다. 다시 정리하세요.")
+        revised = list(decisions)
+        approvals = {}
+        missing = []
+        for previous, line in record.approvals.items():
+            decision = record.decisions[previous]
+            index = next(
+                (
+                    index
+                    for index, candidate in enumerate(revised)
+                    if index not in approvals and candidate.text == decision.text
+                ),
+                None,
+            )
+            if index is None:
+                index = len(revised)
+                revised.append(decision)
+                missing.append(decision)
+            else:
+                revised[index] = decision
+            approvals[index] = line
+        updated = _validated(
+            replace(
+                record,
+                revised_minutes=_include_approved_decisions(minutes.strip(), missing),
+                decisions=tuple(revised),
+                approvals=approvals,
+            )
+        )
+        save_exports((review_export(output_dir, stem, updated),))
+        return updated

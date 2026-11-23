@@ -10,4 +10,5 @@ output/
 dist/
 
 .meet-docs-recovery/
+.meet-docs-corrections/
 team_glossary.json

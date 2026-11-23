@@ -9,16 +9,20 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_VERSION = "3.12.16"
 PYTHON_MINOR = "3.12"
-APP_VERSION = "1.6.4"
+APP_VERSION = "1.7.0"
 APP_ICON = "static/meet-docs-icon.png"
 BACKEND_FILES = (
     ".streamlit/config.toml",
     "app.py",
     "audio_processor.py",
+    "correction_memory.py",
+    "correction_view.py",
     "llm_summarizer.py",
     "meeting_session.py",
     "meeting_storage.py",
     "meeting_history.py",
+    "meeting_audio.py",
+    "meeting_corrections.py",
     "meeting_review.py",
     "review_view.py",
     "team_glossary.py",

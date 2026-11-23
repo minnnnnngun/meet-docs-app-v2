@@ -6,12 +6,16 @@ from pathlib import Path
 
 import streamlit as st
 
+from correction_view import background_action, correction_editor
+from meeting_audio import audio_available, delete_audio
+from meeting_corrections import regenerate_saved_minutes, remember_turn
 from meeting_review import (
     ReviewDecision,
     ReviewRecord,
     ReviewTurn,
     approve_decision,
     confirm_turn,
+    save_correction,
 )
 from meeting_storage import Export
 
@@ -24,11 +28,25 @@ def highlight_unclear(text: str) -> str:
 
 
 def utterance_html(
-    turn: ReviewTurn, *, anchor: bool = False, confirmation: str = ""
+    turn: ReviewTurn,
+    *,
+    anchor: bool = False,
+    confirmation: str = "",
+    correction: str = "",
 ) -> str:
     identity = f' id="review-turn-{turn.line}"' if anchor else ""
-    badge = '<mark class="md-unclear">확인 필요</mark> ' if turn.unclear else ""
-    interpretation = "<small>의도 추정</small> " if turn.intent else ""
+    badge = (
+        '<mark class="md-unclear">확인 필요</mark> '
+        if turn.unclear and not correction
+        else ""
+    )
+    interpretation = (
+        "<small>사용자 교정</small> "
+        if correction
+        else "<small>의도 추정</small> "
+        if turn.intent
+        else ""
+    )
     confirmed = (
         f"<p><strong>사용자가 확인한 발언</strong> {escape(confirmation)}</p>"
         if confirmation
@@ -36,14 +54,16 @@ def utterance_html(
     )
     corrected = (
         f"<p><strong>표기 보정</strong> {highlight_unclear(turn.corrected)}</p>"
-        if turn.intent and turn.corrected and turn.corrected != turn.intent
+        if (turn.intent or correction)
+        and turn.corrected
+        and turn.corrected != (correction or turn.intent)
         else ""
     )
     return (
         f'<details class="md-utterance"{identity}>'
         f"<summary><time>{escape(turn.time)}</time>"
         f"<small>{escape(turn.speaker)}</small><br>{badge}{interpretation}"
-        f"{highlight_unclear(turn.intent or turn.corrected or turn.original)}</summary>"
+        f"{highlight_unclear(correction or turn.intent or turn.corrected or turn.original)}</summary>"
         f"<p><strong>전사 원문</strong> {highlight_unclear(turn.original)}</p>{corrected}{confirmed}</details>"
     )
 
@@ -83,7 +103,20 @@ def _markdown_text(text: str) -> str:
 
 
 def reviewed_download(export: Export, record: ReviewRecord) -> Export:
-    if export.path.suffix != ".md" or not record.decisions:
+    if export.path.suffix != ".md":
+        return export
+    if record.revised_minutes is not None:
+        header = re.split(r"(?m)^##[ \t]+", export.content, maxsplit=1)[0]
+        if header == export.content:
+            header = "\n".join(
+                line
+                for line in header.splitlines()
+                if line.startswith(("# ", "회의 시작 ", "회의 주제 "))
+            )
+        export = Export(
+            export.path, f"{header.rstrip()}\n\n{record.revised_minutes.rstrip()}\n"
+        )
+    if not record.decisions:
         return export
     turns = {turn.line: turn for turn in record.turns}
     indexed = {
@@ -145,7 +178,49 @@ def reviewed_download(export: Export, record: ReviewRecord) -> Export:
     return Export(export.path, "\n".join(lines) + "\n")
 
 
-def saved_review_panel(output_dir: Path, stem: str, record: ReviewRecord) -> None:
+def reviewed_transcript(export: Export, record: ReviewRecord) -> Export:
+    lines = export.content.splitlines()
+    positions = [
+        index
+        for index, line in enumerate(lines)
+        if re.match(r"^\[\d{2,}:[0-5]\d:[0-5]\d\] ", line)
+    ]
+    if not record.turns or len(positions) != len(record.turns):
+        return export
+    for index, turn in zip(positions, record.turns, strict=True):
+        correction = record.corrections.get(turn.line)
+        text = correction or turn.corrected or turn.original
+        if correction is None and turn.unclear and "[불명확]" not in text:
+            text = f"[확인 필요] {text}"
+        lines[index] = f"[{turn.time}] {turn.speaker} · {text}"
+    return Export(export.path, "\n".join(lines) + "\n")
+
+
+@st.fragment(run_every=1)
+def saved_review_panel(
+    output_dir: Path,
+    stem: str,
+    record: ReviewRecord,
+    *,
+    topic: str,
+    api_key: str,
+    model: str,
+    glossary: tuple[str, ...],
+) -> None:
+    if record.audio_id and audio_available(output_dir, record.audio_id):
+        with st.popover("보관 음성 관리"):
+            confirm_delete = st.checkbox(
+                "이 회의의 보관 음성을 삭제합니다.", key=f"erase_confirm_{stem}"
+            )
+            if st.button(
+                "보관 음성 삭제", key=f"erase_audio_{stem}", disabled=not confirm_delete
+            ):
+                try:
+                    delete_audio(output_dir, record.audio_id)
+                except OSError:
+                    st.error("보관 음성을 삭제하지 못했습니다.")
+                else:
+                    st.rerun()
     if not record.turns:
         return
     st.subheader("발언과 결정 검토")
@@ -153,7 +228,10 @@ def saved_review_panel(output_dir: Path, stem: str, record: ReviewRecord) -> Non
 
     def turn_label(line: int) -> str:
         row = turns[line]
-        return f"{row.time} · {row.speaker} · {(row.intent or row.corrected or row.original)[:56]}"
+        text = (
+            record.corrections.get(line) or row.intent or row.corrected or row.original
+        )
+        return f"{row.time} · {row.speaker} · {text[:56]}"
 
     selected_line = st.selectbox(
         "확인할 발언", tuple(turns), format_func=turn_label, key=f"review_turn_{stem}"
@@ -162,13 +240,55 @@ def saved_review_panel(output_dir: Path, stem: str, record: ReviewRecord) -> Non
         turn = turns[selected_line]
         st.html(
             utterance_html(
-                turn, confirmation=record.confirmations.get(selected_line, "")
+                turn,
+                confirmation=record.confirmations.get(selected_line, ""),
+                correction=record.corrections.get(selected_line, ""),
             )
         )
+        with st.expander("오인식 교정"):
+
+            def persist(text: str) -> None:
+                updated = save_correction(output_dir, stem, selected_line, text)
+                try:
+                    remember_turn(
+                        output_dir.parent,
+                        stem,
+                        turn,
+                        updated.corrections.get(selected_line, turn.original),
+                    )
+                except OSError:
+                    st.toast(
+                        "교정문은 저장됐지만 다음 회의에 사용할 후보는 저장하지 못했습니다."
+                    )
+
+            correction_editor(
+                f"saved_correction_{stem}",
+                turn,
+                record.corrections.get(selected_line, ""),
+                output_dir=output_dir,
+                audio_id=record.audio_id,
+                api_key=api_key,
+                glossary=glossary,
+                save=persist,
+            )
+        if record.corrections or record.revised_minutes is not None:
+            background_action(
+                f"resummary_{stem}",
+                "회의록 다시 정리",
+                lambda: regenerate_saved_minutes(
+                    output_dir, stem, topic, record, api_key, model
+                ),
+                lambda _: st.rerun(),
+                disabled=not api_key,
+            )
         interpretation = st.text_area(
             "확인할 문장",
             value=record.confirmations.get(
-                selected_line, turn.intent or turn.corrected or turn.original
+                selected_line,
+                record.corrections.get(selected_line)
+                or turn.intent
+                or turn.corrected
+                or turn.original,
             ),
             max_chars=520,
             key=f"review_text_{stem}_{selected_line}",
@@ -219,7 +339,10 @@ def saved_review_panel(output_dir: Path, stem: str, record: ReviewRecord) -> Non
     st.html(
         "".join(
             utterance_html(
-                turn, anchor=True, confirmation=record.confirmations.get(turn.line, "")
+                turn,
+                anchor=True,
+                confirmation=record.confirmations.get(turn.line, ""),
+                correction=record.corrections.get(turn.line, ""),
             )
             for turn in record.turns
         )

@@ -9,6 +9,8 @@ from pathlib import Path
 import streamlit as st
 from dotenv import dotenv_values
 
+from correction_memory import correction_hints
+from correction_view import correction_editor
 from llm_summarizer import DEFAULT_GEMINI_MODEL
 from meeting_history import (
     MINUTES,
@@ -25,6 +27,7 @@ from review_view import (
     decision_quote,
     highlight_unclear,
     reviewed_download,
+    reviewed_transcript,
     saved_review_panel,
     utterance_html,
 )
@@ -289,6 +292,13 @@ def history_view() -> None:
     except (OSError, ValueError):
         st.warning("이 회차의 검토 데이터를 읽을 수 없습니다.")
         review = None
+    if review is not None:
+        exports = tuple(
+            reviewed_transcript(export, review)
+            if export.path.name.endswith(f"_{TRANSCRIPT}")
+            else export
+            for export in exports
+        )
 
     files = {
         kind: export
@@ -302,18 +312,23 @@ def history_view() -> None:
     tabs = st.tabs(tab_labels)
     with tabs[0]:
         if minutes := files.get(MINUTES):
-            if MARKDOWN_SECTIONS.search(minutes.content):
+            document = (
+                review.revised_minutes
+                if review and review.revised_minutes is not None
+                else minutes.content
+            )
+            if MARKDOWN_SECTIONS.search(document):
                 st.html(
                     minutes_document(
                         selected.topic or "회의록",
-                        minutes.content,
+                        document,
                         "",
                         review,
                         saved=True,
                     )
                 )
             else:
-                archive_transcript(minutes.content)
+                archive_transcript(document)
         else:
             st.info("이 회차의 회의록 파일이 없습니다.")
     with tabs[1]:
@@ -329,7 +344,15 @@ def history_view() -> None:
         exports = tuple(reviewed_download(export, review) for export in exports)
     render_downloads(exports)
     if review is not None:
-        saved_review_panel(OUTPUT_DIR, selected_stem, review)
+        saved_review_panel(
+            OUTPUT_DIR,
+            selected_stem,
+            review,
+            topic=selected.topic,
+            api_key=gemini_key,
+            model=model,
+            glossary=tuple(glossary),
+        )
 
 
 st.set_page_config(page_title="실시간 회의록", page_icon=APP_ICON, layout="wide")
@@ -347,6 +370,7 @@ if st.session_state.pop("prepare_new_meeting", False):
     if desk.prepare_new_meeting(OUTPUT_DIR):
         st.session_state.meeting_topic = ""
         st.session_state.meeting_terms = ""
+        st.session_state.retain_audio = False
         st.session_state.pop("start_error", None)
         st.session_state.pop("recovered_exports", None)
     else:
@@ -403,6 +427,11 @@ with st.sidebar:
         value=True,
         help="300–3,400Hz 대역을 중심으로 음성을 처리합니다.",
     )
+    retain_audio = st.toggle(
+        "재인식용 음성 보관",
+        key="retain_audio",
+        help="이 회의의 마이크 음성을 기기에 보관합니다. 구간 재인식을 요청하면 선택한 시각 주변만 Gemini로 전송합니다.",
+    )
     try:
         glossary = read_glossary(DATA_DIR)
     except (OSError, ValueError):
@@ -443,6 +472,7 @@ with st.sidebar:
             help="한국어 음성 인식은 Gemini 3.5 Flash-Lite를 사용합니다.",
         )
     st.caption("음성과 회의록 요약 자료는 Gemini로 전송합니다.")
+    st.caption("직접 저장한 짧은 교정 쌍은 다음 회의의 인식 힌트로 사용합니다.")
 
 st.html(f'<span id="md-theme-{theme}" hidden></span><style>{STYLES}</style>')
 
@@ -475,6 +505,11 @@ def meeting_view() -> None:
             )
         else:
             try:
+                remembered = correction_hints(DATA_DIR)
+            except OSError:
+                remembered = ()
+                st.toast("최근 교정 후보를 읽지 못했습니다.")
+            try:
                 desk.start(
                     gemini_key=gemini_key,
                     topic=topic.strip(),
@@ -483,6 +518,8 @@ def meeting_view() -> None:
                     output_dir=OUTPUT_DIR,
                     bandpass_enabled=bandpass_enabled,
                     team_words=tuple(glossary),
+                    retain_audio=retain_audio,
+                    remembered_terms=remembered,
                 )
             except (OSError, RuntimeError):
                 st.session_state.start_error = "회의를 시작하지 못했습니다. 저장 폴더 권한과 복구 상태를 확인하세요."
@@ -538,8 +575,25 @@ def meeting_view() -> None:
                 if snapshot and snapshot.caption_count > len(captions)
                 else ""
             )
-            rows = "".join(
-                utterance_html(caption.review_turn(0)) for caption in reversed(captions)
+            turns = (
+                tuple(
+                    caption.review_turn(line)
+                    for line, caption in enumerate(
+                        captions, start=snapshot.caption_count - len(captions) + 1
+                    )
+                )
+                if snapshot
+                else ()
+            )
+            rows = (
+                "".join(
+                    utterance_html(
+                        turn, correction=snapshot.corrections.get(turn.line, "")
+                    )
+                    for turn in reversed(turns)
+                )
+                if snapshot
+                else ""
             )
             body = rows or (
                 '<div class="md-empty"><strong>아직 표시할 자막이 없습니다.</strong>'
@@ -551,6 +605,32 @@ def meeting_view() -> None:
                 f"<h2>실시간 자막</h2></div>{shown}</header>"
                 f'<div class="md-captions-body">{body}</div></section>'
             )
+            if meeting and snapshot and status == "recording" and turns:
+                with st.expander("실시간 오인식 교정"):
+                    by_line = {turn.line: turn for turn in reversed(turns)}
+                    key = f"live_{meeting.started_at.isoformat()}"
+                    line = st.selectbox(
+                        "교정할 발언",
+                        tuple(by_line),
+                        format_func=lambda number: (
+                            f"{by_line[number].time} · {by_line[number].original[:54]}"
+                        ),
+                        key=f"{key}_turn",
+                    )
+                    if line is not None:
+                        correction_editor(
+                            key,
+                            by_line[line],
+                            snapshot.corrections.get(line, ""),
+                            output_dir=OUTPUT_DIR,
+                            audio_id=snapshot.audio_id,
+                            api_key=gemini_key,
+                            glossary=tuple(glossary),
+                            save=lambda text: meeting.save_live_correction(line, text),
+                        )
+                    if st.button("회의록 다시 정리"):
+                        meeting.request_resummary()
+                        st.toast("교정문으로 회의록을 다시 정리합니다.")
         with right:
             message = "새 자막이 쌓이면 30초마다 회의록을 갱신합니다."
             if snapshot and snapshot.exports and not snapshot.minutes:

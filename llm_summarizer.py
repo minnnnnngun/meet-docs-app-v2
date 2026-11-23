@@ -152,7 +152,11 @@ def _support(row: dict, original_lines: list[str]) -> str | None:
 
 
 def _render_minutes(
-    payload: dict, original_lines: list[str], previous_minutes: str
+    payload: dict,
+    original_lines: list[str],
+    previous_minutes: str,
+    *,
+    unedited_lines: list[str] | None = None,
 ) -> tuple[str, tuple[DecisionEvidence, ...]]:
     previous = set(previous_minutes.splitlines())
     agenda: list[str] = []
@@ -186,6 +190,9 @@ def _render_minutes(
         support = _support(row, original_lines)
         rendered = f"- **{status}** — {body}"
         carry = row["source_line"] == 0 and rendered in previous
+        exact_source = (
+            support if unedited_lines is None else _support(row, unedited_lines)
+        )
         if status != "확인 필요" and (
             any(marker in body for marker in UNCERTAIN) or not (carry or support)
         ):
@@ -199,7 +206,9 @@ def _render_minutes(
             )
         ):
             status = "확인 필요"
-        if support:
+        if status == "확정" and not (carry or exact_source):
+            status = "확인 필요"
+        if exact_source:
             add_decision(status, body, row["source_line"], row["quote"].strip())
         else:
             add_decision(status, body)
@@ -279,7 +288,13 @@ class GeminiSummarizer:
         self._client = create_gemini_client(api_key)
         self.latest_evidence: tuple[DecisionEvidence, ...] = ()
 
-    def update(self, previous_minutes: str, new_transcript: str) -> str:
+    def update(
+        self,
+        previous_minutes: str,
+        new_transcript: str,
+        *,
+        unedited_transcript: str | None = None,
+    ) -> str:
         """Return validated replacement minutes for a batch of new captions."""
         if not new_transcript.strip():
             return previous_minutes
@@ -320,7 +335,14 @@ class GeminiSummarizer:
             raise SummaryResponseError(
                 "Gemini 응답에 인증 정보가 포함되어 반영하지 않았습니다."
             )
-        minutes, evidence = _render_minutes(payload, original_lines, previous_minutes)
+        unedited_lines = (
+            None if unedited_transcript is None else unedited_transcript.splitlines()
+        )
+        if unedited_lines is not None and len(unedited_lines) != len(original_lines):
+            raise SummaryResponseError("교정문과 원문의 발언 수가 다릅니다.")
+        minutes, evidence = _render_minutes(
+            payload, original_lines, previous_minutes, unedited_lines=unedited_lines
+        )
         self.latest_evidence = evidence
         return minutes
 
