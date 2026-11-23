@@ -9,14 +9,22 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[1]
 PYTHON_VERSION = "3.12.16"
 PYTHON_MINOR = "3.12"
-APP_VERSION = "1.3.0"
+APP_VERSION = "1.6.4"
+APP_ICON = "static/meet-docs-icon.png"
 BACKEND_FILES = (
+    ".streamlit/config.toml",
     "app.py",
     "audio_processor.py",
     "llm_summarizer.py",
     "meeting_session.py",
     "meeting_storage.py",
     "meeting_history.py",
+    "meeting_review.py",
+    "review_view.py",
+    "team_glossary.py",
+    "workspace.css",
+    "static/PretendardVariable.woff2",
+    APP_ICON,
 )
 
 
@@ -42,7 +50,9 @@ def main() -> None:
         backend = app / "backend"
         backend.mkdir(parents=True)
         for file in BACKEND_FILES:
-            shutil.copyfile(ROOT / file, backend / file)
+            target = backend / file
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / file, target)
         shutil.copyfile(ROOT / "ubuntu/desktop.py", app / "desktop.py")
         shutil.copyfile(ROOT / ".env.example", app / ".env.example")
 
@@ -84,15 +94,16 @@ def main() -> None:
         desktop = package / "usr/share/applications/io.github.meetdocs.MeetDocs.desktop"
         desktop.parent.mkdir(parents=True)
         shutil.copyfile(ROOT / "ubuntu" / desktop.name, desktop)
-        icon = ROOT / "ubuntu/icon.svg"
-        if not icon.is_file():
-            raise SystemExit("Ubuntu application icon is missing.")
         installed_icon = (
             package
-            / "usr/share/icons/hicolor/scalable/apps/io.github.meetdocs.MeetDocs.svg"
+            / "usr/share/icons/hicolor/512x512/apps/io.github.meetdocs.MeetDocs.png"
         )
         installed_icon.parent.mkdir(parents=True)
-        shutil.copyfile(icon, installed_icon)
+        shutil.copyfile(ROOT / APP_ICON, installed_icon)
+
+        font_license = package / "usr/share/doc/meet-docs/Pretendard-OFL.txt"
+        font_license.parent.mkdir(parents=True)
+        shutil.copyfile(ROOT / "licenses/Pretendard-OFL.txt", font_license)
 
         control = package / "DEBIAN/control"
         control.parent.mkdir()

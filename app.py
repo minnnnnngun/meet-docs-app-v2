@@ -1,5 +1,6 @@
 """Streamlit workspace for meeting capture, document review and export."""
 
+import json
 import os
 import re
 from html import escape
@@ -9,10 +10,28 @@ import streamlit as st
 from dotenv import dotenv_values
 
 from llm_summarizer import DEFAULT_GEMINI_MODEL
-from meeting_history import ArchivedMeeting, list_meetings, read_meeting
-from meeting_session import Export, MeetingDesk, elapsed_time
+from meeting_history import (
+    MINUTES,
+    TRANSCRIPT,
+    VERBATIM,
+    ArchivedMeeting,
+    list_meetings,
+    read_meeting,
+)
+from meeting_review import ReviewRecord, read_review
+from meeting_session import Export, MeetingDesk
+from review_view import (
+    approved_quote,
+    decision_quote,
+    highlight_unclear,
+    reviewed_download,
+    saved_review_panel,
+    utterance_html,
+)
+from team_glossary import read_glossary, save_glossary
 
 ROOT = Path(__file__).resolve().parent
+APP_ICON = ROOT / "static" / "meet-docs-icon.png"
 DATA_DIR = Path(os.environ.get("MEET_DOCS_DATA_DIR") or ROOT)
 OUTPUT_DIR = DATA_DIR / "output"
 try:
@@ -31,126 +50,16 @@ THEMES = {
     "light": "밝게",
     "dark": "어둡게",
 }
-PALETTES = {
-    "light": {
-        "bg": "#f4f6f9",
-        "paper": "#ffffff",
-        "field": "#f8faff",
-        "muted": "#536176",
-        "fg": "#172139",
-        "stroke": "#dbe2ed",
-        "wash": "#edf2fa",
-        "accent": "#294d9d",
-        "monitor": "#9d2745",
-    },
-    "dark": {
-        "bg": "#10141b",
-        "paper": "#19212d",
-        "field": "#101824",
-        "muted": "#aebacd",
-        "fg": "#edf3ff",
-        "stroke": "#374457",
-        "wash": "#243045",
-        "accent": "#aac6ff",
-        "monitor": "#ff9eb2",
-    },
-}
-CSS = """
-.stApp, [data-testid="stAppViewContainer"] {
-  background: var(--md-bg); color: var(--md-fg); color-scheme: MD_THEME;
-}
-[data-testid="stHeader"] { background: var(--md-bg); }
-[data-testid="stSidebar"] { background: var(--md-paper); border-right: 1px solid var(--md-stroke); }
-.stMainBlockContainer, [data-testid="stMainBlockContainer"] { padding-top: 3rem; }
-.stApp :is(h1,h2,h3,p,label,summary,textarea,input,button,[role="combobox"]) { color: var(--md-fg); }
-.stApp [data-testid="stCaptionContainer"] p { color: var(--md-muted); }
-.stApp button:not([kind="header"]):not([kind="primary"]),
-.stApp [data-testid="stExpander"] details {
-  background: var(--md-paper); color: var(--md-fg); border-color: var(--md-stroke);
-}
-.stApp :is([data-testid="stTextInputRootElement"], [data-testid="stTextAreaRootElement"],
-  [data-testid="stSelectbox"] [role="group"], [data-baseweb="base-input"],
-  [data-baseweb="textarea"], [data-baseweb="select"] > div) {
-  background: var(--md-field); color: var(--md-fg); border-color: var(--md-stroke);
-}
-.stApp :is([data-testid="stTextInputRootElement"], [data-testid="stSelectbox"] [role="group"])
-  button:not(:hover) { background: transparent; }
-.stApp :is(input, textarea)::placeholder { color: var(--md-muted); opacity: 1; }
-.stApp [data-testid="stExpander"] summary {
-  background: var(--md-wash); color: var(--md-fg);
-}
-.stApp [data-testid="stExpander"] summary:hover { background: var(--md-field); }
-.stApp [data-testid="stSidebar"] :is([data-testid="stIconMaterial"], [data-testid="stTooltipIcon"] svg),
-.stApp [data-testid="stBaseButton-headerNoPadding"] svg { color: var(--md-muted); }
-div[data-baseweb="popover"], div[data-baseweb="popover"] [role="listbox"],
-[role="listbox"], [role="listbox"] [role="option"] {
-  background: var(--md-paper); color: var(--md-fg); border-color: var(--md-stroke);
-}
-[role="listbox"] [role="option"]:is(:hover, [aria-selected="true"]) {
-  background: var(--md-wash); color: var(--md-fg);
-}
-.stApp button[kind="primary"] {
-  background: #3158ad; border-color: #3158ad; color: #fff;
-}
-.stApp button[kind="primary"] p { color: #fff; }
-.stApp button:is([aria-pressed="true"], [role="radio"][aria-checked="true"]) {
-  background: var(--md-wash); border-color: var(--md-accent);
-}
-.stApp button:is([aria-pressed="true"], [role="radio"][aria-checked="true"]) :is(p, span) {
-  color: var(--md-accent);
-}
-.stApp :focus-visible { outline: 2px solid var(--md-accent); outline-offset: 2px; }
-.stApp [data-testid="stAlert"] > div { background: var(--md-wash); color: var(--md-fg); }
-.stApp [data-testid="stVerticalBlockBorderWrapper"] { border-color: var(--md-stroke); }
-.stApp hr { border-color: var(--md-stroke); }
-.md-heading { border-bottom: 1px solid var(--md-stroke); padding-bottom: 1.15rem; }
-.md-heading h1 { padding: 0; font-size: clamp(1.65rem, 2.9vw, 2.35rem); letter-spacing: -.045em; }
-.md-heading p { margin: .55rem 0 0; color: var(--md-muted); font-size: .9rem; }
-.md-status { display: inline-flex; align-items: center; gap: .55rem; padding: .3rem .7rem;
-  border-radius: 2rem; background: var(--md-wash); color: var(--md-fg); font-size: .8rem; }
-.md-status::before { content: ''; width: .5rem; height: .5rem; border-radius: 50%;
-  background: var(--md-muted); }
-.md-status.recording::before { background: var(--md-monitor); }
-.md-panel-title { font-size: 1rem; font-weight: 720; margin: 0; }
-.md-article, .md-captions {
-  background: var(--md-paper); color: var(--md-fg); border: 1px solid var(--md-stroke);
-  border-radius: .85rem; min-height: 340px; overflow-wrap: anywhere;
-}
-.md-article { padding: clamp(1.15rem, 3vw, 2.75rem); }
-.md-captions { padding: 1rem; max-height: 65vh; overflow-y: auto; }
-.md-article header { border-bottom: 1px solid var(--md-stroke); margin-bottom: 1.35rem;
-  padding-bottom: 1.1rem; }
-.md-article h3 { font-size: clamp(1.2rem, 2.4vw, 1.8rem); padding: 0; letter-spacing: -.045em; }
-.md-article h4 { color: var(--md-fg); font-size: 1rem; padding: 0; font-weight: 700; }
-.md-article section { padding: .85rem 0; }
-.md-article section + section, .md-caption + .md-caption {
-  border-top: 1px solid var(--md-stroke);
-}
-.md-article small, .md-captions small { color: var(--md-muted); font-size: .76rem; }
-.md-article ul { margin: .55rem 0 0; }
-.md-article li { line-height: 1.7; }
-.md-article .md-checklist { list-style: none; padding: 0; }
-.md-article .md-task { display: flex; align-items: flex-start; gap: .6rem; margin: .45rem 0; }
-.md-task-meta { display: flex; flex-wrap: wrap; gap: .35rem; margin-top: .2rem; }
-.md-task-meta small { background: var(--md-wash); border-radius: .35rem; padding: .1rem .4rem; }
-.md-article .md-checklist input { width: 1rem; height: 1rem; margin: .3rem 0 0;
-  flex: 0 0 1rem; accent-color: var(--md-accent); }
-.md-caption { padding: .65rem 0; font-size: .86rem; line-height: 1.55; white-space: pre-wrap; }
-.md-caption time { display: block; margin-bottom: .13rem; color: var(--md-muted);
-  font-size: .73rem; font-variant-numeric: tabular-nums; }
-.md-archive-transcript {
-  white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.65;
-}
-@media (max-width: 720px) {
-  .st-key-workspace [data-testid="stHorizontalBlock"] { flex-wrap: wrap; }
-  .st-key-workspace [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] { min-width: 100%; }
-  .md-captions { max-height: 20rem; min-height: 10rem; }
-}
-"""
+STYLES = (ROOT / "workspace.css").read_text(encoding="utf-8")
 MARKDOWN_SECTIONS = re.compile(r"^##[ \t]+(.+?)\s*$", re.MULTILINE)
 MARKDOWN_ITEM = re.compile(r"^(?:[-*+]\s+|\d+[.)]\s+)")
 CHECKBOX = re.compile(r"^\[([ xX])\]\s+")
 BOLD = re.compile(r"\*\*(.+?)\*\*")
+
+
+def archive_transcript(text: str) -> None:
+    with st.container(height=420, border=True):
+        st.html(f'<div class="md-archive-transcript">{highlight_unclear(text)}</div>')
 
 
 def configured_key(*names: str) -> str:
@@ -161,10 +70,38 @@ def configured_key(*names: str) -> str:
     return ""
 
 
-def minutes_document(title: str, minutes: str, message: str) -> str:
+def workspace_banner(title: str, description: str, *, compact: bool = False) -> str:
+    mode = " compact" if compact else ""
+    wave = "<i></i>" * 5
+    return (
+        f'<header class="md-hero{mode}"><div><h1>{escape(title)}</h1>'
+        f"<p>{escape(description)}</p></div>"
+        '<div class="md-visual" aria-hidden="true">'
+        f'<div class="md-wave">{wave}</div></div></header>'
+    )
+
+
+def minutes_document(
+    title: str,
+    minutes: str,
+    message: str,
+    review: ReviewRecord | None = None,
+    *,
+    saved: bool = False,
+) -> str:
     """Build a document from escaped text and the supported Markdown markers."""
     sections = MARKDOWN_SECTIONS.split(minutes)[1:]
     rendered = []
+    turns = {turn.line: turn for turn in review.turns} if review else {}
+    rows = (
+        {
+            (decision.status, decision.text): (index, decision)
+            for index, decision in enumerate(review.decisions)
+        }
+        if review
+        else {}
+    )
+    by_text = {decision.text: (index, decision) for index, decision in rows.values()}
     for index, (heading, body) in enumerate(
         zip(sections[::2], sections[1::2], strict=True)
     ):
@@ -177,7 +114,31 @@ def minutes_document(title: str, minutes: str, message: str) -> str:
             check = CHECKBOX.match(item)
             if check:
                 item = item[check.end() :]
-            value = BOLD.sub(r"<strong>\1</strong>", escape(item))
+            quote = ""
+            if (
+                review
+                and heading == "주요 논의 및 결정 사항"
+                and (
+                    decision_item := re.fullmatch(
+                        r"\*\*(확정|검토|확인 필요)\*\* — (.+)", item
+                    )
+                )
+            ):
+                status, body_text = decision_item.groups()
+                match = rows.get((status, body_text), by_text.get(body_text))
+                if match is not None:
+                    decision_index, decision = match
+                    quote = decision_quote(decision, turns, link=saved)
+                    approval = approved_quote(review, decision_index, link=saved)
+                    quote += approval
+                    item = f"**{'사용자 확정' if approval else decision.status}** — {body_text}"
+            value = BOLD.sub(r"<strong>\1</strong>", highlight_unclear(item))
+            if item.startswith("**확인 필요**"):
+                value = value.replace(
+                    "<strong>확인 필요</strong>",
+                    '<mark class="md-unclear">확인 필요</mark>',
+                    1,
+                )
             if is_checklist and check:
                 state = (
                     'checked aria-label="완료"'
@@ -191,27 +152,45 @@ def minutes_document(title: str, minutes: str, message: str) -> str:
                     metadata = "".join(
                         f"<small>{escape(field)}</small>" for field in details
                     )
-                    value = BOLD.sub(r"<strong>\1</strong>", escape(task))
+                    value = BOLD.sub(r"<strong>\1</strong>", highlight_unclear(task))
                     value += f'<span class="md-task-meta">{metadata}</span>'
                 value = f'<input type="checkbox" disabled {state}><span>{value}</span>'
                 items.append(f'<li class="md-task">{value}</li>')
             else:
-                items.append(f"<li>{value}</li>")
+                items.append(f"<li>{value}{quote}</li>")
         list_class = ' class="md-checklist"' if is_checklist else ""
+        level = "h4" if title else "h3"
         rendered.append(
-            f"<section><h4>{escape(heading)}</h4><ul{list_class}>{''.join(items)}</ul></section>"
+            f"<section><{level}>{escape(heading)}</{level}>"
+            f"<ul{list_class}>{''.join(items)}</ul></section>"
         )
-    content = "".join(rendered) if rendered else f"<small>{escape(message)}</small>"
-    return f'<article class="md-article"><header><h3>{escape(title)}</h3></header>{content}</article>'
+    content = (
+        "".join(rendered)
+        if rendered
+        else f'<div class="md-empty"><small>{escape(message)}</small></div>'
+    )
+    subject = f"<h3>{escape(title)}</h3>" if title else ""
+    return (
+        '<article class="md-article">'
+        '<header><span class="md-panel-icon" aria-hidden="true"></span>'
+        f"<h2>{'회의록' if saved else '자동 회의록'}</h2></header>"
+        f'<div class="md-article-body">{subject}{content}</div></article>'
+    )
 
 
 def render_downloads(exports: tuple[Export, ...]) -> None:
+    exports = tuple(
+        export for export in exports if export.path.suffix in (".md", ".txt")
+    )
     if not exports:
         return
     for column, export in zip(st.columns(len(exports)), exports, strict=True):
         markdown = export.path.suffix == ".md"
+        label = "회의록 다운로드" if markdown else "전체 녹취 다운로드"
+        if export.path.name.endswith(f"_{VERBATIM}"):
+            label = "전사 원문 다운로드"
         column.download_button(
-            "회의록 다운로드" if markdown else "전체 녹취 다운로드",
+            label,
             export.content,
             export.path.name,
             mime="text/markdown" if markdown else "text/plain",
@@ -228,10 +207,36 @@ def history_label(meeting: ArchivedMeeting) -> str:
     )
 
 
+def new_meeting_button(key: str, *, disabled: bool = False) -> None:
+    if st.button(
+        "새 회의록",
+        key=key,
+        icon=":material/add:",
+        disabled=disabled,
+    ):
+        st.session_state.prepare_new_meeting = True
+        st.rerun()
+
+
 def history_view() -> None:
     meeting = desk.current()
-    if meeting and meeting.snapshot().status in {"starting", "recording", "finishing"}:
+    snapshot = meeting.snapshot() if meeting else None
+    busy = snapshot is not None and snapshot.status in {
+        "starting",
+        "recording",
+        "finishing",
+    }
+    unsaved = (
+        snapshot is not None and snapshot.status == "finished" and not snapshot.saved
+    )
+    pending_recovery = desk.has_recovery(OUTPUT_DIR)
+    new_meeting_button(
+        "new_meeting_history", disabled=busy or unsaved or pending_recovery
+    )
+    if busy:
         st.info("진행 중인 회의는 실시간 회의 화면에서 확인할 수 있습니다.")
+    elif unsaved or pending_recovery:
+        st.info("실시간 회의 화면에서 이전 회의를 저장하거나 복구하세요.")
 
     try:
         meetings = list_meetings(OUTPUT_DIR)
@@ -244,7 +249,9 @@ def history_view() -> None:
         )
         return
 
-    search = st.text_input(
+    with st.container(key="history_filters"):
+        search_column, meeting_column = st.columns([1, 1.2], gap="small")
+    search = search_column.text_input(
         "제목 또는 날짜로 검색", placeholder="예) 주간 점검, 2026-11-22"
     )
     matches = {
@@ -259,7 +266,7 @@ def history_view() -> None:
         st.info("검색 조건에 맞는 회의가 없습니다.")
         return
 
-    selected_stem = st.selectbox(
+    selected_stem = meeting_column.selectbox(
         "회의 회차",
         tuple(matches),
         format_func=lambda stem: history_label(matches[stem]),
@@ -277,31 +284,55 @@ def history_view() -> None:
         st.info("선택한 회의의 파일이 저장 폴더에 없습니다.")
         return
 
-    files = {export.path.suffix: export for export in exports}
-    minutes_tab, transcript_tab = st.tabs(("회의록", "전체 녹취"))
-    with minutes_tab:
-        if minutes := files.get(".md"):
+    try:
+        review = read_review(OUTPUT_DIR, selected_stem)
+    except (OSError, ValueError):
+        st.warning("이 회차의 검토 데이터를 읽을 수 없습니다.")
+        review = None
+
+    files = {
+        kind: export
+        for export in exports
+        for kind in (MINUTES, TRANSCRIPT, VERBATIM)
+        if export.path.name.endswith(f"_{kind}")
+    }
+    tab_labels = ["회의록", "전체 녹취"]
+    if VERBATIM in files:
+        tab_labels.append("전사 원문")
+    tabs = st.tabs(tab_labels)
+    with tabs[0]:
+        if minutes := files.get(MINUTES):
             if MARKDOWN_SECTIONS.search(minutes.content):
                 st.html(
-                    minutes_document(selected.topic or "회의록", minutes.content, "")
+                    minutes_document(
+                        selected.topic or "회의록",
+                        minutes.content,
+                        "",
+                        review,
+                        saved=True,
+                    )
                 )
             else:
-                st.text(minutes.content)
+                archive_transcript(minutes.content)
         else:
             st.info("이 회차의 회의록 파일이 없습니다.")
-    with transcript_tab:
-        if transcript := files.get(".txt"):
-            with st.container(height=420, border=True):
-                st.html(
-                    '<div class="md-archive-transcript">'
-                    f"{escape(transcript.content)}</div>"
-                )
+    with tabs[1]:
+        if transcript := files.get(TRANSCRIPT):
+            archive_transcript(transcript.content)
         else:
             st.info("이 회차의 전체 녹취 파일이 없습니다.")
+    if verbatim := files.get(VERBATIM):
+        with tabs[2]:
+            st.caption("화자 번호는 각 음성 인식 구간 안에서만 유효합니다.")
+            archive_transcript(verbatim.content)
+    if review is not None:
+        exports = tuple(reviewed_download(export, review) for export in exports)
     render_downloads(exports)
+    if review is not None:
+        saved_review_panel(OUTPUT_DIR, selected_stem, review)
 
 
-st.set_page_config(page_title="실시간 회의록", page_icon="🎙️", layout="wide")
+st.set_page_config(page_title="실시간 회의록", page_icon=APP_ICON, layout="wide")
 
 
 @st.cache_resource
@@ -310,8 +341,35 @@ def get_desk() -> MeetingDesk:
 
 
 desk = get_desk()
+st.session_state.setdefault("navigation", "실시간 회의")
+if st.session_state.pop("prepare_new_meeting", False):
+    st.session_state.navigation = "실시간 회의"
+    if desk.prepare_new_meeting(OUTPUT_DIR):
+        st.session_state.meeting_topic = ""
+        st.session_state.meeting_terms = ""
+        st.session_state.pop("start_error", None)
+        st.session_state.pop("recovered_exports", None)
+    else:
+        st.session_state.new_meeting_notice = True
+
 with st.sidebar:
-    st.header("회의 설정")
+    st.html(
+        '<div class="md-brand">'
+        f'<img class="md-brand-mark" src="app/static/{APP_ICON.name}" alt="">'
+        "Meet Docs</div>"
+    )
+    view = st.segmented_control(
+        "작업 화면",
+        ("실시간 회의", "회의 기록"),
+        format_func=lambda value: (
+            ":material/mic: 실시간 회의"
+            if value == "실시간 회의"
+            else ":material/folder_open: 회의 기록"
+        ),
+        key="navigation",
+        label_visibility="collapsed",
+        width="stretch",
+    )
     initial_theme = st.query_params.get("theme", "light")
     theme = (
         st.segmented_control(
@@ -327,12 +385,48 @@ with st.sidebar:
     if theme != initial_theme:
         st.query_params["theme"] = theme
 
+    st.html('<h2 class="md-sidebar-title">회의 설정</h2>')
     topic = st.text_input(
-        "회의 주제", max_chars=200, placeholder="예) 11월 제품 출시 점검"
+        "회의 주제",
+        max_chars=200,
+        placeholder="예) 11월 제품 출시 점검",
+        key="meeting_topic",
     )
     terms = st.text_area(
-        "사내 전문 용어", max_chars=600, placeholder="예) 프로젝트명, 참석자 이름, 약어"
+        "사내 전문 용어",
+        max_chars=600,
+        placeholder="예) 프로젝트명, 참석자 이름, 약어",
+        key="meeting_terms",
     )
+    bandpass_enabled = st.toggle(
+        "회의 음성 필터",
+        value=True,
+        help="300–3,400Hz 대역을 중심으로 음성을 처리합니다.",
+    )
+    try:
+        glossary = read_glossary(DATA_DIR)
+    except (OSError, ValueError):
+        st.warning("팀 단어장을 읽을 수 없습니다.")
+        glossary = {}
+    with st.expander("팀 단어장"):
+        st.caption(f"등록 {len(glossary)}개 · Gemini에는 단어 표기만 전송합니다.")
+        with st.form("team_glossary"):
+            glossary_content = st.text_area(
+                "단어와 기기 내부 설명",
+                value=json.dumps(glossary, ensure_ascii=False, indent=2),
+                placeholder='{"프로젝트 알파": "내부 설명"}',
+                height=160,
+            )
+            save_words = st.form_submit_button("팀 단어장 저장")
+        if save_words:
+            try:
+                save_glossary(DATA_DIR, glossary_content)
+            except ValueError:
+                st.error("단어를 왼쪽, 설명을 오른쪽에 둔 JSON 형식을 확인하세요.")
+            except OSError:
+                st.error("팀 단어장을 저장하지 못했습니다.")
+            else:
+                st.rerun()
     env_gemini = configured_key("GEMINI_API_KEY", "GOOGLE_API_KEY")
     with st.expander("Gemini 연결", expanded=not env_gemini):
         gemini_key = (
@@ -350,14 +444,7 @@ with st.sidebar:
         )
     st.caption("음성과 회의록 요약 자료는 Gemini로 전송합니다.")
 
-variables = "".join(f"--md-{name}:{color};" for name, color in PALETTES[theme].items())
-st.html(f"<style>:root{{{variables}}}{CSS.replace('MD_THEME', theme)}</style>")
-view = st.segmented_control(
-    "작업 화면",
-    ("실시간 회의", "회의 기록"),
-    default="실시간 회의",
-    label_visibility="collapsed",
-)
+st.html(f'<span id="md-theme-{theme}" hidden></span><style>{STYLES}</style>')
 
 
 @st.fragment(run_every=1)
@@ -371,12 +458,14 @@ def meeting_view() -> None:
     )
     pending_recovery = desk.has_recovery(OUTPUT_DIR)
 
-    start_column, stop_column, status_column = st.columns(
-        [1.25, 1.25, 4], vertical_alignment="center"
-    )
+    with st.container(key="meeting_controls"):
+        start_column, stop_column, status_column = st.columns(
+            [1.05, 1.05, 2], gap="small", vertical_alignment="center"
+        )
     if start_column.button(
         "회의 시작",
         type="primary",
+        icon=":material/play_arrow:",
         disabled=bool(busy or unsaved or pending_recovery),
         width="stretch",
     ):
@@ -392,6 +481,8 @@ def meeting_view() -> None:
                     terms=terms.strip(),
                     model=model,
                     output_dir=OUTPUT_DIR,
+                    bandpass_enabled=bandpass_enabled,
+                    team_words=tuple(glossary),
                 )
             except (OSError, RuntimeError):
                 st.session_state.start_error = "회의를 시작하지 못했습니다. 저장 폴더 권한과 복구 상태를 확인하세요."
@@ -403,6 +494,7 @@ def meeting_view() -> None:
     if (
         stop_column.button(
             "회의 종료",
+            icon=":material/stop_circle:",
             disabled=status not in ("starting", "recording"),
             width="stretch",
         )
@@ -438,30 +530,28 @@ def meeting_view() -> None:
         render_downloads(recovered_exports)
 
     with st.container(key="workspace"):
-        left, right = st.columns([1, 2.2], gap="medium")
+        left, right = st.columns([1, 1.6], gap="medium")
         with left:
-            st.html('<h2 class="md-panel-title">실시간 자막</h2>')
-            if snapshot and snapshot.captions:
-                count = len(snapshot.captions)
-                preview = (
-                    f"<small>최근 {count}개 자막</small>"
-                    if snapshot.caption_count > count
-                    else ""
-                )
-                rows = "".join(
-                    f'<div class="md-caption"><time>{elapsed_time(caption.seconds)}</time>{escape(caption.text)}</div>'
-                    for caption in reversed(snapshot.captions)
-                )
-            else:
-                preview = (
-                    "<small>말뜻을 유지하며 표기를 보정한 자막이 표시됩니다.</small>"
-                )
-                rows = ""
+            captions = snapshot.captions if snapshot else ()
+            shown = (
+                f"<small>최근 {len(captions)}개</small>"
+                if snapshot and snapshot.caption_count > len(captions)
+                else ""
+            )
+            rows = "".join(
+                utterance_html(caption.review_turn(0)) for caption in reversed(captions)
+            )
+            body = rows or (
+                '<div class="md-empty"><strong>아직 표시할 자막이 없습니다.</strong>'
+                "<small>인식된 발언을 열면 전사 원문을 볼 수 있습니다.</small></div>"
+            )
             st.html(
-                f'<section class="md-captions" aria-label="자막 타임라인">{preview}{rows}</section>'
+                '<section class="md-captions"><header><div class="md-panel-title">'
+                '<span class="md-panel-icon caption" aria-hidden="true"></span>'
+                f"<h2>실시간 자막</h2></div>{shown}</header>"
+                f'<div class="md-captions-body">{body}</div></section>'
             )
         with right:
-            st.html('<h2 class="md-panel-title">자동 회의록</h2>')
             message = "새 자막이 쌓이면 30초마다 회의록을 갱신합니다."
             if snapshot and snapshot.exports and not snapshot.minutes:
                 message = (
@@ -469,9 +559,16 @@ def meeting_view() -> None:
                     if snapshot.caption_count
                     else "인식된 발언이 없습니다."
                 )
-            title = (meeting.topic if meeting else topic.strip()) or "회의록"
+            title = meeting.topic if meeting else topic.strip()
             st.html(
-                minutes_document(title, snapshot.minutes if snapshot else "", message)
+                minutes_document(
+                    title,
+                    snapshot.minutes if snapshot else "",
+                    message,
+                    ReviewRecord(snapshot.evidence_turns, snapshot.review_decisions)
+                    if snapshot
+                    else None,
+                )
             )
 
     if not snapshot:
@@ -490,7 +587,8 @@ def meeting_view() -> None:
 
     if status == "finished" and snapshot.exports:
         if snapshot.saved:
-            st.success("저장 폴더에 회의록과 전체 녹취를 저장했습니다.")
+            st.success("회의록, 전체 녹취 및 전사 원문을 저장했습니다.")
+            new_meeting_button("new_meeting_saved", disabled=pending_recovery)
         elif st.button("파일 다시 저장") and meeting:
             meeting.retry_save()
             st.rerun()
@@ -498,11 +596,21 @@ def meeting_view() -> None:
 
 
 if view == "회의 기록":
-    st.html('<div class="md-heading"><h1>회의 기록</h1></div>')
+    st.html(
+        workspace_banner(
+            "회의 기록",
+            "저장한 회차를 찾아 회의록과 발언 근거를 확인하세요.",
+            compact=True,
+        )
+    )
     history_view()
 else:
     st.html(
-        '<div class="md-heading"><h1>실시간 회의록</h1>'
-        "<p>자막을 확인하고 회의록과 전체 녹취를 저장하세요.</p></div>"
+        workspace_banner(
+            "실시간 회의록",
+            "발언을 자막으로 보고 회의가 끝나면 회의록과 녹취를 저장하세요.",
+        )
     )
+    if st.session_state.pop("new_meeting_notice", False):
+        st.warning("진행 중이거나 아직 저장되지 않은 회의를 먼저 마무리하세요.")
     meeting_view()

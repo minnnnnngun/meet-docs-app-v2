@@ -1,0 +1,12 @@
+[server]
+enableStaticServing = true
+
+[theme]
+font = "Pretendard, Noto Sans CJK KR, sans-serif"
+primaryColor = "#8360b3"
+
+[[theme.fontFaces]]
+family = "Pretendard"
+url = "app/static/PretendardVariable.woff2"
+weight = "100 900"
+style = "normal"

@@ -34,6 +34,9 @@ class MeetingRecord:
     minutes: str
     summarized_count: int
     stem: str | None = None
+    verbatim_captions: tuple[str, ...] | None = None
+    review_turns_json: tuple[str, ...] = ()
+    review_decisions_json: str | None = None
 
 
 class RecoveryJournal:
@@ -91,11 +94,12 @@ class RecoveryJournal:
                     """CREATE TABLE meeting (
                     id INTEGER PRIMARY KEY CHECK (id = 1), started_at TEXT NOT NULL,
                     topic TEXT NOT NULL, minutes TEXT NOT NULL DEFAULT '',
-                    summarized_count INTEGER NOT NULL DEFAULT 0, stem TEXT
+                    summarized_count INTEGER NOT NULL DEFAULT 0, stem TEXT, review_decisions_json TEXT
                     )"""
                 )
                 connection.execute(
-                    "CREATE TABLE captions (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL)"
+                    "CREATE TABLE captions (sequence INTEGER PRIMARY KEY, line TEXT NOT NULL, "
+                    "verbatim_line TEXT, review_turn_json TEXT)"
                 )
                 connection.execute(
                     "INSERT INTO meeting (id, started_at, topic) VALUES (1, ?, ?)",
@@ -106,17 +110,29 @@ class RecoveryJournal:
             self.clear()
             raise
 
-    def append_caption(self, sequence: int, line: str) -> None:
+    def append_caption(
+        self,
+        sequence: int,
+        line: str,
+        verbatim_line: str | None = None,
+        review_turn_json: str | None = None,
+    ) -> None:
         with self._connection() as connection:
             connection.execute(
-                "INSERT INTO captions (sequence, line) VALUES (?, ?)", (sequence, line)
+                "INSERT INTO captions (sequence, line, verbatim_line, review_turn_json) VALUES (?, ?, ?, ?)",
+                (sequence, line, verbatim_line, review_turn_json),
             )
 
-    def store_minutes(self, minutes: str, summarized_count: int) -> None:
+    def store_minutes(
+        self,
+        minutes: str,
+        summarized_count: int,
+        review_decisions_json: str | None = None,
+    ) -> None:
         with self._connection() as connection:
             connection.execute(
-                "UPDATE meeting SET minutes = ?, summarized_count = ? WHERE id = 1",
-                (minutes, summarized_count),
+                "UPDATE meeting SET minutes = ?, summarized_count = ?, review_decisions_json = ? WHERE id = 1",
+                (minutes, summarized_count, review_decisions_json),
             )
 
     def store_stem(self, stem: str) -> None:
@@ -132,15 +148,35 @@ class RecoveryJournal:
                 "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'meeting'"
             ).fetchone():
                 return None
+            meeting_columns = {
+                column[1] for column in connection.execute("PRAGMA table_info(meeting)")
+            }
+            decisions_column = (
+                "review_decisions_json"
+                if "review_decisions_json" in meeting_columns
+                else "NULL"
+            )
             row = connection.execute(
-                "SELECT started_at, topic, minutes, summarized_count, stem FROM meeting WHERE id = 1"
+                "SELECT started_at, topic, minutes, summarized_count, stem, "
+                f"{decisions_column} FROM meeting WHERE id = 1"
             ).fetchone()
             if row is None:
                 return None
+            # Legacy journals store only edited captions.
+            caption_columns = {
+                column[1]
+                for column in connection.execute("PRAGMA table_info(captions)")
+            }
+            raw_column = (
+                "verbatim_line" if "verbatim_line" in caption_columns else "NULL"
+            )
+            turn_column = (
+                "review_turn_json" if "review_turn_json" in caption_columns else "NULL"
+            )
             captions = connection.execute(
-                "SELECT sequence, line FROM captions ORDER BY sequence"
+                f"SELECT sequence, line, {raw_column}, {turn_column} FROM captions ORDER BY sequence"
             ).fetchall()
-        started_at, topic, minutes, summarized_count, stem = row
+        started_at, topic, minutes, summarized_count, stem, review_decisions = row
         try:
             start = datetime.fromisoformat(started_at)
         except (TypeError, ValueError) as exc:
@@ -152,13 +188,17 @@ class RecoveryJournal:
                 prefix != date or not sequence.isascii() or not sequence.isdigit()
             ):
                 raise OSError("Invalid meeting recovery filename")
+        verbatim = tuple(raw for _, _, raw, _ in captions if raw is not None)
         return MeetingRecord(
             start,
             topic,
-            tuple(line for _, line in captions),
+            tuple(line for _, line, _, _ in captions),
             minutes,
-            sum(sequence <= summarized_count for sequence, _ in captions),
+            sum(sequence <= summarized_count for sequence, _, _, _ in captions),
             stem,
+            verbatim or None,
+            tuple(turn for _, _, _, turn in captions if turn is not None),
+            review_decisions,
         )
 
     def clear(self) -> None:

@@ -12,8 +12,12 @@ from meeting_storage import Export
 
 MINUTES = "회의록.md"
 TRANSCRIPT = "전체녹취.txt"
+VERBATIM = "전사원문.txt"
+EXPORT_KINDS = (MINUTES, TRANSCRIPT, VERBATIM)
 STEM = r"(?P<stamp>[0-9]{8}_[0-9]{4})(?:_(?P<sequence>[1-9][0-9]*))?"
-ARCHIVE_FILENAME = re.compile(rf"(?P<stem>{STEM})_(?P<kind>회의록\.md|전체녹취\.txt)")
+ARCHIVE_FILENAME = re.compile(
+    rf"(?P<stem>{STEM})_(?P<kind>{'|'.join(map(re.escape, EXPORT_KINDS))})"
+)
 
 
 @dataclass(frozen=True)
@@ -24,6 +28,7 @@ class ArchivedMeeting:
     round_number: int
     has_minutes: bool
     has_transcript: bool
+    has_verbatim: bool = False
 
 
 def _open_export(path: Path) -> TextIO:
@@ -84,7 +89,7 @@ def list_meetings(output_dir: Path) -> tuple[ArchivedMeeting, ...]:
             continue
         headers = [
             _export_header(output_dir / f"{stem}_{kind}", stamp)
-            for kind in (MINUTES, TRANSCRIPT)
+            for kind in EXPORT_KINDS
             if kind in kinds
         ]
         topic = next((topic for _, topic in headers if topic), "")
@@ -100,18 +105,24 @@ def list_meetings(output_dir: Path) -> tuple[ArchivedMeeting, ...]:
             rounds[topic_key] = number
         meetings.append(
             ArchivedMeeting(
-                stem, topic, started_at, number, MINUTES in kinds, TRANSCRIPT in kinds
+                stem,
+                topic,
+                started_at,
+                number,
+                MINUTES in kinds,
+                TRANSCRIPT in kinds,
+                VERBATIM in kinds,
             )
         )
     return tuple(reversed(meetings))
 
 
 def read_meeting(output_dir: Path, meeting: ArchivedMeeting) -> tuple[Export, ...]:
-    """Read available exports in minutes-then-transcript order."""
+    """Read the available minutes, edited transcript, and verbatim transcript."""
     if output_dir.is_symlink() or not re.fullmatch(STEM, meeting.stem):
         return ()
     exports = []
-    for kind in (MINUTES, TRANSCRIPT):
+    for kind in EXPORT_KINDS:
         path = output_dir / f"{meeting.stem}_{kind}"
         try:
             with _open_export(path) as stream:
