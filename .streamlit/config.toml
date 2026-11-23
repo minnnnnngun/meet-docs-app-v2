@@ -1,5 +1,6 @@
 [server]
 enableStaticServing = true
+showEmailPrompt = false
 
 [theme]
 font = "Pretendard, Noto Sans CJK KR, sans-serif"

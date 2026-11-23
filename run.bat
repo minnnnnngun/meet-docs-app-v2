@@ -4,6 +4,7 @@ pushd "%~dp0" || goto folder_error
 
 set "PYTHONUTF8=1"
 set "VENV_PYTHON=.venv\Scripts\python.exe"
+if exist "runtime\python.exe" goto launch_portable
 if exist "%VENV_PYTHON%" goto check_venv
 
 echo Creating the Python environment...
@@ -40,9 +41,16 @@ if errorlevel 1 goto install_error
 copy /y requirements.txt .venv\installed-requirements.txt >nul
 if errorlevel 1 goto install_error
 
+:launch_portable
+set "APP_PYTHON=runtime\python.exe"
+goto start_app
+
 :launch
+set "APP_PYTHON=%VENV_PYTHON%"
+
+:start_app
 echo The meeting app will open at http://127.0.0.1:8501
-"%VENV_PYTHON%" -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=false --browser.gatherUsageStats=false
+"%APP_PYTHON%" -I -X utf8 -m streamlit run app.py --server.address=127.0.0.1 --server.port=8501 --server.headless=false --browser.gatherUsageStats=false
 if errorlevel 1 goto launch_error
 popd
 exit /b 0

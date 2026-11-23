@@ -22,11 +22,14 @@
 
 ## Windows에 설치하기
 
-1. 프로젝트 압축을 풀고, `run.bat`와 `app.py`가 같은 폴더에 있는지 확인합니다. 쓰기가 가능한 로컬 폴더를 사용하세요.
-2. 64비트 Python 3.12 또는 3.11을 설치합니다. **Python 설치 관리자**를 받은 경우 설치 후 명령 프롬프트에서 `py install 3.12`를 실행합니다. 독립 설치 프로그램을 사용하는 경우 첫 화면에서 **Add Python to PATH**를 선택합니다. 그러면 명령 프롬프트가 Python을 찾을 수 있습니다. [Python Windows 다운로드](https://www.python.org/downloads/windows/) · [Windows 설치 공식 문서](https://docs.python.org/3/using/windows.html)
-3. Windows 11의 **설정 → 시스템 → 소리 → 입력**에서 ThinkBook 내장 마이크를 기본 입력으로 선택합니다. 입력 장치 이름은 드라이버에 따라 다릅니다. 말을 할 때 입력 막대가 움직이는지 확인합니다. **설정 → 개인정보 및 보안 → 마이크**에서 마이크 액세스, 앱의 마이크 액세스, 데스크톱 앱의 마이크 액세스를 켭니다. 마이크 음소거 키나 헤드셋 연결에 따라 기본 입력이 바뀔 수 있습니다. [Microsoft 마이크 점검 안내](https://support.microsoft.com/en-au/windows/hardware/drivers/fix-microphone-problems)
-4. `run.bat`를 더블클릭합니다. 처음 실행하면 `.venv`라는 프로젝트 전용 Python 환경을 만들고 필요한 패키지를 내려받습니다. 처음 설치하거나 `requirements.txt`가 바뀌면 몇 분 정도 걸릴 수 있습니다.
-5. 브라우저가 열리면 준비가 끝납니다. 자동으로 열리지 않으면 주소창에 `http://127.0.0.1:8501`을 입력합니다. 회의가 끝날 때까지 실행된 명령 프롬프트 창을 열어 두세요.
+1. Windows용 ZIP을 내려받아 쓰기 가능한 로컬 폴더에 모두 압축을 풉니다. ZIP에는 64비트 Intel/AMD Windows용 Python과 실행에 필요한 패키지가 들어 있습니다. [Windows 1.7.0 ZIP 다운로드](https://github.com/minnnnnngun/meet-docs-app-v2/releases/download/v1.7.0/meet-docs_1.7.0_windows_x64.zip)
+2. Windows **설정 → 시스템 → 소리 → 입력**에서 내장 마이크를 기본 입력으로 선택합니다. **개인정보 및 보안 → 마이크**에서 데스크톱 앱의 마이크 액세스를 켭니다. [Microsoft 마이크 점검 안내](https://support.microsoft.com/en-au/windows/hardware/drivers/fix-microphone-problems)
+3. 압축을 푼 폴더의 `run.bat`를 더블클릭합니다. 브라우저가 자동으로 열리지 않으면 `http://127.0.0.1:8501`에 접속합니다. 앱에서 Gemini API 키를 입력하고, 회의가 끝날 때까지 명령 프롬프트 창을 열어 둡니다.
+4. 회의 결과는 압축을 푼 폴더 아래 `output`에 저장됩니다.
+
+소스 코드에서 실행하려면 64비트 Python 3.12 또는 3.11을 설치하고 `run.bat`를 실행합니다. 이 경우 첫 실행에서 `.venv`를 만들고 의존성을 내려받습니다. [Python Windows 다운로드](https://www.python.org/downloads/windows/)
+
+Windows ZIP을 다시 빌드하려면 Python 3.12 이상과 `uv`가 있는 환경에서 `python windows/build_zip.py`를 실행합니다.
 
 ## 연결 키 설정하기
 
